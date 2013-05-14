@@ -120,14 +120,16 @@ if __name__ == '__main__':
         f.write("Halt button pressed, shutting down\n")
         shutdownbutton == True
     except: # some other error happened, flash the green light a few times then exit
+        f.write("Error occurred\n")
         # Blink the led, maybe throw in an error led later, maybe move the blinking to a thread?
         for x in range(30):
             blink(18)
-            if GPIO.input(17) == GPIO.HIGH:
+            # not needed as the event handler deals with it
+            #if GPIO.input(17) == GPIO.HIGH:
                 #time to exit
-                shutdownbutton = True
-                f.write("Error occurred\n")
-                break
+            #    shutdownbutton = True
+            #    f.write("Error occurred\n")
+            #    break
     finally: # close the file and clean up
         gpsp.running = False
         gpsp.join()
