@@ -16,8 +16,15 @@ import time
 import threading
 import RPi.GPIO as GPIO
 
+# global vars
 gpsd = None #setting the global variable
+isrunning = True #only set to false if button is pressed
+shutdownbutton = False
+f = None
 
+# some constants, clean up later:
+WAIT_TIME_NO_FIX = 5
+WAIT_TIME_FIX = 1
 class HaltPress( Exception ): pass
 
 # gps polling thread:
@@ -69,67 +76,53 @@ def blink(pin):
     time.sleep(1)
 
 # maybe add this in later?: GPIO.add_event_callback(channel, my_callback, bouncetime=200)
-def buttonPress():
+def buttonPress(channel):
     print "shutdown button pressed"
-    raise HaltPress
+    global isrunning, shutdownbutton, f
+    isrunning = False
+    shutdownbutton = True
+    f.write("Halt button pressed, shutting down\n")
 
 if __name__ == '__main__':
     # setup the GPIO
     GPIO.setmode(GPIO.BCM)
-    GPIO.setup(17, GPIO.IN) # switch for turning the pi off
+    GPIO.setup(17, GPIO.IN, pull_up_down=GPIO.PUD_UP) # switch for turning the pi off, use software edge detection
     GPIO.setup(18, GPIO.OUT) # led to notify when the pi is recording
-    GPIO.add_event_callback(17, buttonPress(), bouncetime=200) # raise a halt program exception
+    GPIO.add_event_detect(17, GPIO.FALLING, callback=buttonPress, bouncetime=300) # setup event detect
+    GPIO.output(18,GPIO.HIGH) # indicate that we are 'recording'
     
     gpsp = GpsPoller() # create the thread
-    shutdownbutton = False # used for figuring out if the program needs to call the shutdown routine
     try:
-        GPIO.output(18,GPIO.HIGH)
         curtime = time.strftime("%m-%d-%y %H:%M")
         f = open('/home/pi/logger/logs/' + curtime + '.log','w')
         f.write("time,lat,lon,alt,head,spd\n")
         gpsp.start() # start it up
-        while True:
-            #It may take a second or two to get good data
-            gpsDebugoutput()
-            # grab all data for recording
-            lat = gpsd.fix.latitude
-            lon = gpsd.fix.longitude
-            alt = gpsd.fix.altitude * METERS_TO_FEET
-            spd = gpsd.fix.speed #* MPS_TO_MPH #not sure if base is in mps or knots... maybe record both base units and km/h?
-            head = gpsd.fix.track
-            strlog = "{0},{1},{2},{3:.2},{4:.1},{5:.1}\n".format(time.time(), lat, lon,  alt, head, spd)
-            if gpsd.fix.mode == 3 or gpsd.fix.mode == 2:
+        while isrunning:
+            # Modified, no sense on getting data from the gps if we are just going to throw it away.
+            if gpsd.fix.mode == 1:
+                # sleep for a tiny bit and see if the gps gets a fix
+                time.sleep(WAIT_TIME_NO_FIX) # 5 sec seems good enough, every 5 sec + main loop wait gives us some time to get a fix
+            elif gpsd.fix.mode == 3 or gpsd.fix.mode == 2:
+                #gpsDebugoutput()
+                # grab all data for recording
+                lat = gpsd.fix.latitude
+                lon = gpsd.fix.longitude
+                alt = gpsd.fix.altitude * METERS_TO_FEET
+                spd = gpsd.fix.speed #* MPS_TO_MPH #not sure if base is in mps or knots... maybe record both base units and km/h?
+                head = gpsd.fix.track
+                strlog = "{0},{1},{2},{3:.2},{4:.1},{5:.1}\n".format(time.time(), lat, lon,  alt, head, spd)
                 f.write(strlog)
                 f.flush()
-            elif gpsd.fix.mode == 1:
-                # sleep for a tiny bit and see if the gps gets a fix
-                time.sleep(5) # 5 sec seems good enough, every 5 sec + main loop wait gives us some time to get a fix
-            # not needed, event handling 
-            #if GPIO.input(17) == GPIO.HIGH:
-            #    print "shutdown button pressed"
-            #    gpsp.running = False
-            #    gpsp.join()
-            #    shutdownbutton = True
-            #    break
-            time.sleep(1) # in seconds, eventually plan on a 1+ min wait, for now get as much data as possible in a short time for testing
+                time.sleep(WAIT_TIME_FIX) # in seconds, eventually plan on a 1+ min wait, for now get as much data as possible in a short time for testing
     
     except (KeyboardInterrupt, SystemExit): #when you press ctrl+c
         print "\nKilling Thread..."
-        f.write("System exit\n")
-    except (HaltPress):
-        f.write("Halt button pressed, shutting down\n")
-        shutdownbutton == True
+        f.write("System or keyboard exit\n")
     except: # some other error happened, flash the green light a few times then exit
         f.write("Error occurred\n")
         # Blink the led, maybe throw in an error led later, maybe move the blinking to a thread?
-        for x in range(30):
+        for x in range(10):
             blink(18)
-            # not needed as the event handler deals with it
-            #if GPIO.input(17) == GPIO.HIGH:
-                #time to exit
-            #    shutdownbutton = True
-            #    f.write("Error occurred\n")
-            #    break
     finally: # close the file and clean up
         gpsp.running = False
         gpsp.join()
